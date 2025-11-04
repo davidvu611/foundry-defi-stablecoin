@@ -8,6 +8,7 @@ import { HelperConfig, CodeConstants } from '../../script/HelperConfig.s.sol';
 import { DSCEngine } from '../../src/DSCEngine.sol';
 import { DecentralizedStableCoin } from '../../src/DecentralizedStableCoin.sol';
 import { ERC20Mock } from '@openzeppelin/contracts/mocks/ERC20Mock.sol';
+import { MockV3Aggregator } from '../mocks/MockV3Aggregator.sol';
 
 contract DSEngineTest is CodeConstants, Test {
     constructor() {}
@@ -18,6 +19,7 @@ contract DSEngineTest is CodeConstants, Test {
     DSCEngine dscEngine;
     DecentralizedStableCoin dscCoin;
     address USER = makeAddr('user');
+    address LIQUIDATOR = makeAddr('liquidator');
     uint256 constant AMOUNT_COLLATERAL = 10 ether;
     uint256 constant STARTING_BALANCE = 50 ether;
 
@@ -32,6 +34,7 @@ contract DSEngineTest is CodeConstants, Test {
         //Provide USER some money to test
         if (block.chainid == LOCAL_CHAIN_ID) {
             ERC20Mock(config.wEth).mint(USER, STARTING_BALANCE);
+            ERC20Mock(config.wEth).mint(LIQUIDATOR, STARTING_BALANCE);
         }
     }
 
@@ -42,17 +45,24 @@ contract DSEngineTest is CodeConstants, Test {
         return dscEngine.getUsdValue(collateralToken, 1) * 1e8;
     }
 
+    function getMaxCollateralToCover(uint256 mintAmount) public view returns (uint256) {
+        uint256 priceInUsd = getPriceInUsd(config.wEth);
+        uint256 collateralizedPercent = dscEngine.getCollateralizedPercent();
+        return (mintAmount * collateralizedPercent) / 100 / (priceInUsd / 1e8);
+    }
+
     function getMaxMintAmount(
         address collateralToken,
         uint256 collateralAmount
     ) private view returns (uint256 maxMintAmount) {
         uint256 priceInUsd = getPriceInUsd(collateralToken) / 1e8;
         uint256 collateralInUsd = (collateralAmount * priceInUsd);
-        maxMintAmount = (collateralInUsd * dscEngine.getLiquidationThreshold()) / 100;
+        maxMintAmount = (collateralInUsd * 100) / dscEngine.getCollateralizedPercent();
         // console2.log('------getMaxMintAmount-------');
         // console2.log('collateralAmount', collateralAmount);
         // console2.log('priceInUsd', priceInUsd);
         // console2.log('collateralInUsd', collateralInUsd);
+        // console2.log('maxMintAmount', maxMintAmount);
     }
 
     /////////////////////////////////////////////
@@ -96,8 +106,6 @@ contract DSEngineTest is CodeConstants, Test {
     //         Deposit collateral tests
     /////////////////////////////////////////////
     modifier depositCollateral(uint256 collateralAmount) {
-        //ERC20Mock(config.wEth).mint(USER, collateralAmount);
-
         vm.startPrank(USER);
         ERC20Mock(config.wEth).approve(address(dscEngine), collateralAmount);
         dscEngine.depositCollateral(config.wEth, collateralAmount);
@@ -285,6 +293,13 @@ contract DSEngineTest is CodeConstants, Test {
         assertEq(totalDscMinted, amountToMint - amountDscToRedeem);
     }
 
+    function testRedeemAmountOverDeposit() public depositCollateral(AMOUNT_COLLATERAL) {
+        vm.startPrank(USER);
+        vm.expectRevert(DSCEngine.DSCEngine__RedeemAmountOverDeposit.selector);
+        dscEngine.redeemCollateral(config.wEth, AMOUNT_COLLATERAL + 1);
+        vm.stopPrank();
+    }
+
     /////////////////////////////////////////////
     //             Integration
     /////////////////////////////////////////////
@@ -359,13 +374,158 @@ contract DSEngineTest is CodeConstants, Test {
     /////////////////////////////////////////////
     function testGetHealthFactor() public depositCollateral(AMOUNT_COLLATERAL) {
         // Mint
-        uint256 amountToMint = getMaxMintAmount(config.wEth, 1);
+        uint256 collateralizedPercent = dscEngine.getCollateralizedPercent();
+        uint256 amountToMint = getMaxMintAmount(config.wEth, AMOUNT_COLLATERAL / 3);
         vm.startPrank(USER);
         dscEngine.mintDsc(amountToMint);
         vm.stopPrank();
         (uint256 totalMinted, uint256 totalCollateralInUsd) = dscEngine.getAccountInformation(USER);
         uint actualHealthFactor = dscEngine.getHealthFactor(USER);
-        uint expectedHealthFactor = dscEngine.calculateHealthFactor(totalMinted, totalCollateralInUsd);
+        uint expectedHealthFactor = (totalCollateralInUsd * 1e18 * 100) / collateralizedPercent / totalMinted;
+        console2.log('collateralizedPercent', collateralizedPercent);
+        console2.log('totalMinted', totalMinted, totalMinted / 1e18);
+        console2.log('totalCollateralInUsd', totalCollateralInUsd, totalCollateralInUsd / 1e18);
+
+        console2.log('actualHealthFactor', actualHealthFactor, actualHealthFactor / 1e18);
+        console2.log('expectedHealthFactor', expectedHealthFactor, expectedHealthFactor / 1e18);
         assertEq(actualHealthFactor, expectedHealthFactor);
+    }
+
+    ///////////////////////
+    // Liquidation Tests //
+    ///////////////////////
+
+    function depositCollateralAndMintDsc(uint ethCollateralAmt) public {
+        uint256 amountToMint = getMaxMintAmount(config.wEth, ethCollateralAmt);
+        vm.startPrank(USER);
+        ERC20Mock(config.wEth).approve(address(dscEngine), ethCollateralAmt);
+        dscEngine.depositCollateralAndMintDsc(config.wEth, ethCollateralAmt, amountToMint);
+        vm.stopPrank();
+    }
+
+    modifier priceReduceCauseHeaHealthFactorFallen(uint256 reducePercent) {
+        // 1 -  Mint all deposited -> Health factor = 1
+        vm.startPrank(USER);
+        depositCollateralAndMintDsc(AMOUNT_COLLATERAL);
+        vm.stopPrank();
+        uint256 startHealthFactor = dscEngine.getHealthFactor(USER);
+        // 2 -  Reduce ETH price by half -> reduce Health factor ->  liquidatation
+        uint256 ethPriceInUsd = dscEngine.getUsdValue(config.wEth, 1);
+        MockV3Aggregator(config.wEthPriceFeed).updateAnswer(int256(((ethPriceInUsd * 1e8) * reducePercent) / 100));
+        _;
+    }
+
+    function testHealthFactorFallBellowOne() public priceReduceCauseHeaHealthFactorFallen(95) {
+        uint256 healthFactor = dscEngine.getHealthFactor(USER);
+        assert(healthFactor < 1e18);
+    }
+
+    function testCannotLiquidateGoodHealthFactor() public priceReduceCauseHeaHealthFactorFallen(100) {
+        uint256 collateralToCover = 1 ether;
+        uint256 debtToCover = getMaxMintAmount(config.wEth, collateralToCover);
+        console2.log('debtToCover', debtToCover / 1e18);
+
+        vm.startPrank(LIQUIDATOR);
+        depositCollateralAndMintDsc(AMOUNT_COLLATERAL);
+        vm.stopPrank();
+        ERC20Mock(config.wEth).approve(address(dscEngine), collateralToCover);
+
+        vm.expectRevert(DSCEngine.DSCEngine__HealthFactorOk.selector);
+        dscEngine.liquidate(config.wEth, USER, debtToCover);
+        vm.stopPrank();
+    }
+
+    function testMustImproveHealthFactorOnLiquidation() public priceReduceCauseHeaHealthFactorFallen(75) {
+        uint256 priceInUsd = getPriceInUsd(config.wEth);
+        uint256 liquidationBonusPercent = dscEngine.getLiquidationBonusPercent();
+        uint256 startHealthFactor = dscEngine.getHealthFactor(USER);
+        uint256 collateralToCover = 133 * 1e17;
+        uint256 debtToCover = getMaxMintAmount(config.wEth, collateralToCover);
+
+        vm.startPrank(LIQUIDATOR);
+        ERC20Mock(config.wEth).approve(address(dscEngine), collateralToCover);
+        dscEngine.depositCollateralAndMintDsc(config.wEth, collateralToCover, debtToCover);
+
+        dscCoin.approve(address(dscEngine), debtToCover);
+        dscEngine.liquidate(config.wEth, USER, debtToCover);
+        vm.stopPrank();
+
+        uint userCollateral = dscEngine.getAccountCollateral(config.wEth, USER);
+        (uint256 userMinted, uint256 userInUsd) = dscEngine.getAccountInformation(USER);
+        (uint256 liqTotalMinted, uint256 liqTotalInUsd) = dscEngine.getAccountInformation(LIQUIDATOR);
+
+        uint256 endHealthFactor = dscEngine.getHealthFactor(USER);
+        console2.log('debtToCover', debtToCover, debtToCover / 1e18);
+        console2.log('startHealthFactor', startHealthFactor);
+        console2.log('endHealthFactor', endHealthFactor, endHealthFactor / 1e18);
+
+        uint redeemInUsd = debtToCover / (priceInUsd / 1e8);
+        uint bonusRedeemInUsd = (debtToCover * liquidationBonusPercent) / 100 / (priceInUsd / 1e8);
+        console2.log('redeem in USD', redeemInUsd, redeemInUsd / 1e18);
+        console2.log('bonus redeem in USD', bonusRedeemInUsd, bonusRedeemInUsd / 1e18);
+
+        console2.log('userMinted', userMinted, userMinted / 1e18);
+        console2.log('userInUsd', userInUsd, userInUsd / 1e18);
+        console2.log('userCollateral', userCollateral, userCollateral / 1e18);
+
+        console2.log('liqTotalMinted', liqTotalMinted, liqTotalMinted / 1e18);
+        console2.log('liqTotalInUsd', liqTotalInUsd, liqTotalInUsd / 1e18);
+        assert(startHealthFactor < endHealthFactor);
+    }
+
+    function testRevertIfOverLiquidation() public priceReduceCauseHeaHealthFactorFallen(75) {
+        (uint256 userMinted, ) = dscEngine.getAccountInformation(USER);
+        uint256 collateralToCover = getMaxCollateralToCover(userMinted) + 1;
+        uint256 debtToCover = getMaxMintAmount(config.wEth, collateralToCover);
+
+        vm.startPrank(LIQUIDATOR);
+        ERC20Mock(config.wEth).approve(address(dscEngine), collateralToCover);
+        dscEngine.depositCollateralAndMintDsc(config.wEth, collateralToCover, debtToCover);
+
+        dscCoin.approve(address(dscEngine), debtToCover);
+        vm.expectRevert();
+        dscEngine.liquidate(config.wEth, USER, debtToCover);
+        vm.stopPrank();
+    }
+
+    function testLiquidationIsCorrect() public priceReduceCauseHeaHealthFactorFallen(75) {
+        // Setup
+        (uint256 userOpenMinted, uint256 userOpenInUsd) = dscEngine.getAccountInformation(USER);
+        uint256 priceInUsd = getPriceInUsd(config.wEth);
+        uint256 liquidationBonusPercent = dscEngine.getLiquidationBonusPercent();
+
+        uint256 collateralToCover = 1 ether; //getMaxCollateralToCover(userOpenMinted) - 1;
+        console2.log('collateralToCover', collateralToCover, collateralToCover / 1e18);
+        uint256 debtToCover = getMaxMintAmount(config.wEth, collateralToCover);
+
+        vm.startPrank(LIQUIDATOR);
+        ERC20Mock(config.wEth).approve(address(dscEngine), collateralToCover);
+        dscEngine.depositCollateralAndMintDsc(config.wEth, collateralToCover, debtToCover);
+        uint256 liquidatorOpenBalance = ERC20Mock(config.wEth).balanceOf(LIQUIDATOR);
+
+        // Action
+        dscCoin.approve(address(dscEngine), debtToCover);
+        dscEngine.liquidate(config.wEth, USER, debtToCover);
+        vm.stopPrank();
+
+        //Check
+        uint256 liquidatorEndBalance = ERC20Mock(config.wEth).balanceOf(LIQUIDATOR);
+        uint redeemCollateral = (debtToCover + (debtToCover * liquidationBonusPercent) / 100) / (priceInUsd / 1e8);
+        (uint256 userCloseMinted, uint256 userCloseInUsd) = dscEngine.getAccountInformation(USER);
+
+        console2.log('liquidatorOpenBalance', liquidatorOpenBalance, liquidatorOpenBalance / 1e18);
+        console2.log('redeemCollateral', redeemCollateral, redeemCollateral / 1e18);
+        console2.log('liquidatorEndBalance', liquidatorEndBalance, liquidatorEndBalance / 1e18);
+
+        console2.log('userOpenMinted', userOpenMinted, userOpenMinted / 1e18);
+        console2.log('userCloseMinted', userCloseMinted, userCloseMinted / 1e18);
+        console2.log('debtToCover', debtToCover, debtToCover / 1e18);
+
+        console2.log('userOpenInUsd', userOpenInUsd, userOpenInUsd / 1e18);
+        console2.log('userCloseInUsd', userCloseInUsd, userCloseInUsd / 1e18);
+
+        assertEq(liquidatorOpenBalance + redeemCollateral, liquidatorEndBalance);
+        assertEq(userOpenMinted - debtToCover, userCloseMinted);
+        assertEq(userOpenInUsd - (redeemCollateral * priceInUsd) / 1e8, userCloseInUsd);
     }
 }

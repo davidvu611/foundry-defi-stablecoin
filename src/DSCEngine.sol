@@ -32,6 +32,8 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__NotLiquidateHealthFactorOk();
     error DSCEngine__OutOfMintedAmount(address, uint256);
     error DSCEngine__Test(address, uint256);
+    error DSCEngine__HealthFactorOk();
+    error DSCEngine__HealthFactorNotImproved();
 
     /////////////////////////////////////////////
     //            Type declarations            //
@@ -43,8 +45,9 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant USD_PRECISION = 1e8;
     uint256 private constant COLLATERAL_PRECISION = 1e18;
 
-    uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% overcollateralized or 02 collateral value (in usd) back 01 DSC
+    uint256 private constant PERCENT_PRECISION = 100;
+    uint256 private constant COLLATERALIZED_PERCENT = 200; // 200% overcollateralized or 02 collateral value (in usd) back 01 DSC
+    uint256 private constant LIQUIDATION_BONUS = 10; // 10%
 
     uint256 private constant MIN_HEALTH_FACTOR = 1e18;
 
@@ -69,7 +72,7 @@ contract DSCEngine is ReentrancyGuard {
         _;
     }
 
-    modifier isAllowToken(address token) {
+    modifier isAllowedToken(address token) {
         _isAllowToken(token);
         _;
     }
@@ -125,7 +128,7 @@ contract DSCEngine is ReentrancyGuard {
     function depositCollateral(
         address tokenCollateralAddress,
         uint256 amountCollateral
-    ) public moreThanZero(amountCollateral) nonReentrant isAllowToken(tokenCollateralAddress) {
+    ) public moreThanZero(amountCollateral) nonReentrant isAllowedToken(tokenCollateralAddress) {
         s_collateralDeposited[msg.sender][tokenCollateralAddress] += amountCollateral;
         emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
         bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
@@ -160,7 +163,7 @@ contract DSCEngine is ReentrancyGuard {
     function redeemCollateral(
         address tokenCollateralAddress,
         uint256 amountCollateral
-    ) public moreThanZero(amountCollateral) isAllowToken(tokenCollateralAddress) nonReentrant {
+    ) public moreThanZero(amountCollateral) isAllowedToken(tokenCollateralAddress) nonReentrant {
         _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
         // Check health factor after the transfer, revert the transaction if HF <1
         _revertIfHealthFactorBroken(msg.sender);
@@ -179,7 +182,7 @@ contract DSCEngine is ReentrancyGuard {
     function burnDsc(uint256 amountDsc) public moreThanZero(amountDsc) nonReentrant {
         _burnDsc(amountDsc, msg.sender, msg.sender);
         // not neccessary: never hit
-        _revertIfHealthFactorBroken(msg.sender);
+        //_revertIfHealthFactorBroken(msg.sender);
     }
 
     function getHealthFactor(address user) external view returns (uint256) {
@@ -188,6 +191,50 @@ contract DSCEngine is ReentrancyGuard {
 
     function getCollateralBalanceOfUser(address user, address token) external view returns (uint256) {
         return s_collateralDeposited[user][token];
+    }
+
+    /*
+     * @param collateralToken: The ERC20 token address of the collateral you're using to make the protocol solvent again.
+     * This is collateral that you're going to take from the user who is insolvent.
+     * In return, you have to burn your DSC to pay off their debt, but you don't pay off your own.
+     * @param user: The user who is insolvent. They have to have a _healthFactor below MIN_HEALTH_FACTOR
+     * @param debtToCover: The amount of DSC you want to burn to cover the user's debt.
+     *
+     * @notice: You can partially liquidate a user.
+     * @notice: You will get a 10% LIQUIDATION_BONUS for taking the users funds.
+    * @notice: This function working assumes that the protocol will be roughly 150% overcollateralized in order for this
+    to work.
+    * @notice: A known bug would be if the protocol was only 100% collateralized, we wouldn't be able to liquidate
+    anyone.
+     * For example, if the price of the collateral plummeted before anyone could be liquidated.
+     */
+    function liquidate(
+        address collateralToken,
+        address user,
+        uint256 debtToCover
+    ) external isAllowedToken(collateralToken) moreThanZero(debtToCover) nonReentrant {
+        uint256 startingUserHealthFactor = _healthFactor(user);
+        if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorOk();
+        }
+        // If covering 100 DSC, we need to $100 of collateral
+        uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(collateralToken, debtToCover);
+        // And give them a 10% bonus
+        // So we are giving the liquidator $110 of WETH for 100 DSC
+        // We should implement a feature to liquidate in the event the protocol is insolvent
+        // And sweep extra amounts into a treasury
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / PERCENT_PRECISION;
+        // Burn DSC equal to debtToCover
+        // Figure out how much collateral to recover based on how much burnt
+        _redeemCollateral(collateralToken, tokenAmountFromDebtCovered + bonusCollateral, user, msg.sender);
+        _burnDsc(debtToCover, user, msg.sender);
+
+        uint256 endingUserHealthFactor = _healthFactor(user);
+        // This conditional should never hit, but just in case
+        // if (endingUserHealthFactor <= startingUserHealthFactor) {
+        //     revert DSCEngine__HealthFactorNotImproved();
+        // }
+        _revertIfHealthFactorBroken(msg.sender);
     }
 
     /////////////////////////////////////////////
@@ -231,9 +278,9 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     function _calculateHealthFactor(uint256 totalMinted, uint256 totalCollateralInUsd) internal pure returns (uint256) {
-        uint256 collateralAdjustedForThreshold = totalCollateralInUsd * LIQUIDATION_THRESHOLD;
+        uint256 adjustedCollateral = (totalCollateralInUsd * PERCENT_PRECISION) / COLLATERALIZED_PERCENT;
         if (totalMinted == 0) return type(uint256).max;
-        return ((collateralAdjustedForThreshold * COLLATERAL_PRECISION) / totalMinted / LIQUIDATION_PRECISION);
+        return ((adjustedCollateral * COLLATERAL_PRECISION) / totalMinted);
     }
 
     /*
@@ -324,7 +371,15 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     // In 100
-    function getLiquidationThreshold() public pure returns (uint256) {
-        return LIQUIDATION_THRESHOLD;
+    function getCollateralizedPercent() public pure returns (uint256) {
+        return COLLATERALIZED_PERCENT;
+    }
+
+    function getLiquidationBonusPercent() public pure returns (uint256) {
+        return LIQUIDATION_BONUS;
+    }
+
+    function getAccountCollateral(address collateral, address user) public view returns (uint256) {
+        return s_collateralDeposited[user][collateral];
     }
 }
