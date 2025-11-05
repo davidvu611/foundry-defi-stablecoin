@@ -229,7 +229,7 @@ contract DSCEngine is ReentrancyGuard {
         _redeemCollateral(collateralToken, tokenAmountFromDebtCovered + bonusCollateral, user, msg.sender);
         _burnDsc(debtToCover, user, msg.sender);
 
-        uint256 endingUserHealthFactor = _healthFactor(user);
+        //uint256 endingUserHealthFactor = _healthFactor(user);
         // This conditional should never hit, but just in case
         // if (endingUserHealthFactor <= startingUserHealthFactor) {
         //     revert DSCEngine__HealthFactorNotImproved();
