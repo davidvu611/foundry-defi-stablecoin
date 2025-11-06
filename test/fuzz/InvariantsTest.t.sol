@@ -5,7 +5,7 @@
 
 pragma solidity ^0.8.18;
 
-import { Test } from 'forge-std/Test.sol';
+import { Test, console2 } from 'forge-std/Test.sol';
 import { StdInvariant } from 'forge-std/StdInvariant.sol';
 import { DeployDSC } from '../../script/DeployDSC.s.sol';
 import { HelperConfig } from '../../script/HelperConfig.s.sol';
@@ -32,10 +32,15 @@ contract InvariantsTest is StdInvariant, Test {
 
     function invariant_protocolMustHaveMoreValueThanTotalSupply() public view {
         uint totalSupply = dsc.totalSupply();
-        uint totalWethDeposited = IERC20(config.wEth).balanceOf(address(dsc));
-        uint totalWbtcDeposited = IERC20(config.wBtc).balanceOf(address(dsc));
+        uint totalWethDeposited = IERC20(config.wEth).balanceOf(address(dsce));
+        uint totalWbtcDeposited = IERC20(config.wBtc).balanceOf(address(dsce));
         uint totalWethValue = dsce.getUsdValue(config.wEth, totalWethDeposited);
         uint totalWbtcValue = dsce.getUsdValue(config.wBtc, totalWbtcDeposited);
+
+        console2.log('----invariant-----');
+        console2.log('totalSupply', totalSupply);
+        console2.log('totalWethValue', totalWethValue);
+        console2.log('totalWbtcValue', totalWbtcValue);
         assert(totalSupply <= totalWethValue + totalWbtcValue);
     }
 }

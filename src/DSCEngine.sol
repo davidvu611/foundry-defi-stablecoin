@@ -27,7 +27,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__BreakHealthFactor(uint256);
     error DSCEngine__MintFailed();
     error DSCEngine__TransferFailed();
-    error DSCEngine__RedeemAmountOverDeposit();
+    error DSCEngine__RedeemAmountOverDeposit(uint, uint);
     error DSCEngine__OutOfBalance();
     error DSCEngine__NotLiquidateHealthFactorOk();
     error DSCEngine__OutOfMintedAmount(address, uint256);
@@ -62,6 +62,7 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////////
     event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
     event CollateralRedeemed(address indexed from, address indexed to, address indexed token, uint256 amount);
+    event Test(address indexed from, address indexed to, uint256 indexed amount);
 
     /////////////////////////////////////////////
     //              Modifier                   //
@@ -189,10 +190,6 @@ contract DSCEngine is ReentrancyGuard {
         return _healthFactor(user);
     }
 
-    function getCollateralBalanceOfUser(address user, address token) external view returns (uint256) {
-        return s_collateralDeposited[user][token];
-    }
-
     /*
      * @param collateralToken: The ERC20 token address of the collateral you're using to make the protocol solvent again.
      * This is collateral that you're going to take from the user who is insolvent.
@@ -241,13 +238,13 @@ contract DSCEngine is ReentrancyGuard {
     //     Internal and private functions      //
     /////////////////////////////////////////////
 
-    function _moreThanZero(uint256 amount) internal pure {
+    function _moreThanZero(uint256 amount) private pure {
         if (amount <= 0) {
             revert DSCEngine__NeedsMoreThanZero();
         }
     }
 
-    function _isAllowToken(address token) internal view {
+    function _isAllowToken(address token) private view {
         if (s_priceFeeds[token] == address(0)) {
             revert DSCEngine__TokenNotAllowed();
         }
@@ -258,6 +255,10 @@ contract DSCEngine is ReentrancyGuard {
     ) private view returns (uint256 totalDscMinted, uint256 collateralInUsd) {
         totalDscMinted = s_DSCMinted[user];
         collateralInUsd = getAccountCollateralValueInUsd(user);
+    }
+
+    function _getCollateralBalanceOfUser(address user, address token) private view returns (uint256) {
+        return s_collateralDeposited[user][token];
     }
 
     // Return price with USD_PRECISION
@@ -272,7 +273,7 @@ contract DSCEngine is ReentrancyGuard {
      * If a user goes bellow 1, he can be get liquidated
      * @param user : address of user
      */
-    function _healthFactor(address user) internal view returns (uint256) {
+    function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalMinted, uint256 totalCollateralInUsd) = _getAccountInformation(user);
         return _calculateHealthFactor(totalMinted, totalCollateralInUsd);
     }
@@ -302,8 +303,9 @@ contract DSCEngine is ReentrancyGuard {
         address to
     ) private {
         // Check if the redeem amount is over the deposit ??
-        if (s_collateralDeposited[msg.sender][tokenCollateralAddress] < amountCollateral) {
-            revert DSCEngine__RedeemAmountOverDeposit();
+        uint256 balanceAmt = _getCollateralBalanceOfUser(msg.sender, tokenCollateralAddress);
+        if (balanceAmt < amountCollateral) {
+            revert DSCEngine__RedeemAmountOverDeposit(balanceAmt, amountCollateral);
         }
         s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
         emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
@@ -379,7 +381,11 @@ contract DSCEngine is ReentrancyGuard {
         return LIQUIDATION_BONUS;
     }
 
-    function getAccountCollateral(address collateral, address user) public view returns (uint256) {
-        return s_collateralDeposited[user][collateral];
+    function getCollateralBalanceOfUser(address user, address collateral) public view returns (uint256) {
+        return _getCollateralBalanceOfUser(user, collateral);
+    }
+
+    function getCollateralTokens() public view returns (address[] memory) {
+        return s_collateralTokens;
     }
 }
