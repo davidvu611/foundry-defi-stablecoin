@@ -43,4 +43,21 @@ contract InvariantsTest is StdInvariant, Test {
         console2.log('totalWbtcValue', totalWbtcValue);
         assert(totalSupply <= totalWethValue + totalWbtcValue);
     }
+
+    function invariant_getterFunctionNotRevert() public view {
+        dsce.getHealthFactor(msg.sender);
+        dsce.getAccountCollateralValueInUsd(msg.sender);
+        dsce.getAccountInformation(msg.sender);
+        dsce.getCollateralBalanceOfUser(msg.sender, config.wEth);
+        dsce.getCollateralBalanceOfUser(msg.sender, config.wBtc);
+        dsce.getCollateralizedPercent();
+        dsce.getCollateralTokens();
+        dsce.getLiquidationBonusPercent();
+        dsce.getTokenAmountFromUsd(config.wEth, 1e18);
+        dsce.getTokenAmountFromUsd(config.wBtc, 1e18);
+        dsce.getUsdValue(config.wEth, 1e18);
+        dsce.getUsdValue(config.wBtc, 1e18);
+        dsce.getPriceFeed(config.wEth);
+        dsce.getPriceFeed(config.wBtc);
+    }
 }

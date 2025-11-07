@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: SEE LICENSE IN LICENSE
 pragma solidity ^0.8.18;
 
-import { AggregatorV3Interface } from '@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol';
+// import { AggregatorV3Interface } from '@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol';
 import { ReentrancyGuard } from '@openzeppelin/contracts/security/ReentrancyGuard.sol';
 import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import { DecentralizedStableCoin } from './DecentralizedStableCoin.sol';
+import { OracleLib, AggregatorV3Interface } from './libraries/OracleLib.sol';
 
 /*
  * @title: the engine to keep DSC pegged to USD using wETH as collateral.
@@ -39,6 +40,7 @@ contract DSCEngine is ReentrancyGuard {
     //            Type declarations            //
     /////////////////////////////////////////////
 
+    using OracleLib for AggregatorV3Interface;
     /////////////////////////////////////////////
     //          State varriables               //
     /////////////////////////////////////////////
@@ -264,7 +266,7 @@ contract DSCEngine is ReentrancyGuard {
     // Return price with USD_PRECISION
     function _getPriceInUsd(address collateralToken) private view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[collateralToken]);
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        (, int256 price, , , ) = priceFeed.staleCheckLatestRoundData();
         return uint256(price);
     }
 
@@ -387,5 +389,9 @@ contract DSCEngine is ReentrancyGuard {
 
     function getCollateralTokens() public view returns (address[] memory) {
         return s_collateralTokens;
+    }
+
+    function getPriceFeed(address token) public view returns (address) {
+        return s_priceFeeds[token];
     }
 }
