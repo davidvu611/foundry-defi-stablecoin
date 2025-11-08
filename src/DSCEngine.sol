@@ -35,6 +35,8 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__Test(address, uint256);
     error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
+    error DSCEngine__PriceChangeTooFrequent();
+    error DSCEngine__PriceChangeExcessLimit();
 
     /////////////////////////////////////////////
     //            Type declarations            //
@@ -53,11 +55,18 @@ contract DSCEngine is ReentrancyGuard {
 
     uint256 private constant MIN_HEALTH_FACTOR = 1e18;
 
+    // Max price change (percent) in the time frame
+    uint256 private constant PRICE_CHANGE_PERCENT = 75; //75%
+    // How long the price can be changed,the system will revert if the price changes
+    // too frequently, for example, price change within 10 minutes.
+    uint256 private constant PRICE_CHANGE_TIME_FRAME = 0 seconds;
+
     DecentralizedStableCoin private immutable i_dsc;
     mapping(address token => address priceFeed) private s_priceFeeds;
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
     mapping(address user => uint256 amount) private s_DSCMinted;
     address[] private s_collateralTokens;
+    mapping(address priceFeed => uint256 price) private s_lastPrice;
 
     /////////////////////////////////////////////
     //                    Events               //
@@ -188,7 +197,7 @@ contract DSCEngine is ReentrancyGuard {
         //_revertIfHealthFactorBroken(msg.sender);
     }
 
-    function getHealthFactor(address user) external view returns (uint256) {
+    function getHealthFactor(address user) external returns (uint256) {
         return _healthFactor(user);
     }
 
@@ -252,9 +261,7 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function _getAccountInformation(
-        address user
-    ) private view returns (uint256 totalDscMinted, uint256 collateralInUsd) {
+    function _getAccountInformation(address user) private returns (uint256 totalDscMinted, uint256 collateralInUsd) {
         totalDscMinted = s_DSCMinted[user];
         collateralInUsd = getAccountCollateralValueInUsd(user);
     }
@@ -264,10 +271,27 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     // Return price with USD_PRECISION
-    function _getPriceInUsd(address collateralToken) private view returns (uint256) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[collateralToken]);
-        (, int256 price, , , ) = priceFeed.staleCheckLatestRoundData();
-        return uint256(price);
+    function _getPriceInUsd(address collateralToken) private returns (uint256) {
+        address priceFeedAddress = s_priceFeeds[collateralToken];
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
+        (, int256 price, , uint256 updatedAt, ) = priceFeed.staleCheckLatestRoundData();
+        //return uint256(price);
+
+        uint256 currentPrice = uint256(price);
+        uint256 lastPrice = s_lastPrice[priceFeedAddress];
+        if (lastPrice != 0) {
+            int256 timeDiff = int256(block.timestamp - updatedAt);
+            if (lastPrice != currentPrice && uint256(timeDiff) < PRICE_CHANGE_TIME_FRAME) {
+                revert DSCEngine__PriceChangeTooFrequent();
+            }
+            uint256 priceDiff = (currentPrice > lastPrice ? currentPrice - lastPrice : lastPrice - currentPrice);
+            priceDiff = (priceDiff * 100) / lastPrice;
+            if (priceDiff > PRICE_CHANGE_PERCENT) {
+                revert DSCEngine__PriceChangeExcessLimit();
+            }
+        }
+        s_lastPrice[priceFeedAddress] = currentPrice;
+        return currentPrice;
     }
 
     /*
@@ -275,7 +299,7 @@ contract DSCEngine is ReentrancyGuard {
      * If a user goes bellow 1, he can be get liquidated
      * @param user : address of user
      */
-    function _healthFactor(address user) private view returns (uint256) {
+    function _healthFactor(address user) private returns (uint256) {
         (uint256 totalMinted, uint256 totalCollateralInUsd) = _getAccountInformation(user);
         return _calculateHealthFactor(totalMinted, totalCollateralInUsd);
     }
@@ -291,7 +315,7 @@ contract DSCEngine is ReentrancyGuard {
      * 2 - Revert if they do not
      * @param user : address of user
      */
-    function _revertIfHealthFactorBroken(address user) internal view {
+    function _revertIfHealthFactorBroken(address user) internal {
         uint256 userHealthFactor = _healthFactor(user);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert DSCEngine__BreakHealthFactor(userHealthFactor);
@@ -334,7 +358,7 @@ contract DSCEngine is ReentrancyGuard {
     //            Public functions             //
     /////////////////////////////////////////////
 
-    function getAccountCollateralValueInUsd(address user) public view returns (uint256 totalCollateralInUsd) {
+    function getAccountCollateralValueInUsd(address user) public returns (uint256 totalCollateralInUsd) {
         totalCollateralInUsd = 0;
         for (uint i = 0; i < s_collateralTokens.length; i++) {
             totalCollateralInUsd += getUsdValue(
@@ -344,7 +368,7 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
+    function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public returns (uint256) {
         uint256 price = _getPriceInUsd(token);
         // $100e18 USD Debt
         // 1 ETH = 2000 USD
@@ -360,13 +384,13 @@ contract DSCEngine is ReentrancyGuard {
      * @param token : collateral token address
      * @param amount : in terms of WEI (1e18)
      */
-    function getUsdValue(address token, uint256 amount) public view returns (uint256 usdAmount) {
+    function getUsdValue(address token, uint256 amount) public returns (uint256 usdAmount) {
         // If 1 ETH = 1000 USD, the returned value from Chainlink will be 1000 * 1e8 (USD_PRECISION)
         uint256 price = _getPriceInUsd(token);
         return (price * amount) / USD_PRECISION;
     }
 
-    function getAccountInformation(address user) public view returns (uint256 totalDscMinted, uint256 collateralInUsd) {
+    function getAccountInformation(address user) public returns (uint256 totalDscMinted, uint256 collateralInUsd) {
         return _getAccountInformation(user);
     }
 

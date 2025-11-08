@@ -1,66 +1,95 @@
-## Foundry
+## Description
+- This is learning project to build a decentralized stablecoin provided by Cyfrin https://github.com/Cyfrin/foundry-defi-stablecoin-cu
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+- The code work followed Patrict Collins training video: writing smart contract, using chainlink price feed, openzeppelin libraries,etc.
+- There project was tested using Foundry platform to perform unit tests, integration test, fuzz test,invariants test...
+- A solution to the fast price changing issue was also added :
+  + PRICE_CHANGE_PERCENT and PRICE_CHANGE_TIME_FRAME were added to detect the fast price changing (change to often and price change out of setting limit)
+  + DSCEngine__PriceChangeTooFrequent(), DSCEngine__PriceChangeExcessLimit() will be raised for such cases
 
-Foundry consists of:
+## Requirements
+- [foundry](https://getfoundry.sh/)
+  - You'll know you did it right if you can run `forge --version` and you see a response like `forge 1.3.5-stable`
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## Quickstart
 
-## Documentation
+```
+cd foundry-defi-stablecoin
+make build
+```
+# Usage
 
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
+## Install library and tools
+```
+make clean install
 ```
 
-### Test
-
-```shell
-$ forge test
+## Build
+```
+make build
 ```
 
-### Format
-
-```shell
-$ forge fmt
+## Deploy
+Deloy to your local.
+```
+make deploy
 ```
 
-### Gas Snapshots
+## Testing
 
-```shell
-$ forge snapshot
+```
+forge test
 ```
 
-### Anvil
+### Test Coverage
 
-```shell
-$ anvil
+```
+forge coverage
 ```
 
-### Deploy
+# Deployment to a testnet or mainnet
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+1. Setup environment variables
+
+- Add environmet varriables to a `.env` file
+    RPC_URL=http://localhost:8545
+    SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/xxxxxxxxxxxxx
+    ETHERSCAN_API_KEY=xxxxxxxxxxxxxxxxxx
+    DEFAULT_ANVIL_KEY=0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    SEPOLIA_PRIVATE_KEY=0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+- SEPOLIA_RPC_URL: This is url of the sepolia testnet node you're working with.
+- ETHERSCAN_API_KEY if you want to verify your contract on [Etherscan](https://etherscan.io/).
+- ANVIL_PRIVATE_KEY: private key to deploy the system to Anvil (local Ethereum development node)
+- SEPOLIA_PRIVATE_KEY: private key to deploy the system to Seploria test net
+
+
+2. Get testnet ETH
+
+Head over to https://cloud.google.com/application/web3/faucet/ethereum and get some testnet ETH. You should see the ETH show up in your metamask.
+
+3. Deploy to sepolia testnet
+
+```
+make deploy ARGS="--network sepolia"
 ```
 
-### Cast
+## Estimate gas
 
-```shell
-$ cast <subcommand>
+You can estimate how much gas things cost by running:
+
+```
+forge snapshot
 ```
 
-### Help
+And you'll see an output file called `.gas-snapshot`
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+# Formatting
+
+To run code formatting:
+
 ```
+forge fmt
+```
+
+# Thank Patrick Collins!

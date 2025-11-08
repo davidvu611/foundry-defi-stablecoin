@@ -12,8 +12,7 @@ abstract contract CodeConstants {
 
     uint8 public constant PRICE_FEED_DECIMALS = 8;
     int256 public constant ETH_USD_PRICE = 2000e8;
-    int256 public constant BTC_USD_PRICE = 50000e8;
-    uint256 public DEFAULT_ENVIL_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    int256 public constant BTC_USD_PRICE = 20000e8;
 }
 
 contract HelperConfig is CodeConstants, Script {
@@ -54,7 +53,7 @@ contract HelperConfig is CodeConstants, Script {
                 wBtcPriceFeed: 0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43,
                 wEth: 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9,
                 wBtc: 0x29f2D40B0605204364af54EC677bD022dA425d03,
-                deployerKey: vm.envUint('PRIVATE_KEY')
+                deployerKey: vm.envUint('SEPOLIA_PRIVATE_KEY')
             });
     }
 
@@ -80,7 +79,7 @@ contract HelperConfig is CodeConstants, Script {
                 wBtcPriceFeed: address(btcUsdPriceFeed),
                 wEth: address(wethMock),
                 wBtc: address(wbtcMock),
-                deployerKey: DEFAULT_ENVIL_KEY
+                deployerKey: vm.envUint('ANVIL_PRIVATE_KEY')
             });
     }
 }

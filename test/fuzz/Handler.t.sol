@@ -11,53 +11,46 @@ import '../libraries/TestLib.sol';
 
 contract Handler is Test {
     uint private constant MAX_DEPOSIT_AMOUNT = type(uint96).max;
+    uint private constant PRICE_CHANGE_TIME_FRAME = 1 seconds;
+
+    uint lastTimePriceChange;
     DSCEngine dsce;
     DecentralizedStableCoin dsc;
     address[] collateralTokens;
+    address[] haveDeposit;
     MockV3Aggregator ethUsdPriceFeed;
 
     constructor(DSCEngine _dsce, DecentralizedStableCoin _dsc) {
         dsce = _dsce;
         dsc = _dsc;
+
         collateralTokens = dsce.getCollateralTokens();
         ethUsdPriceFeed = MockV3Aggregator(dsce.getPriceFeed(collateralTokens[0]));
-        //ethUsdPriceFeed.updateAnswer(7176);
+        lastTimePriceChange = block.timestamp;
     }
 
-    function mint(uint amount) public {
-        (uint totalMint, uint collateralInUsd) = dsce.getAccountInformation(msg.sender);
-        uint256 maxMintAmount = TestLib.getMaxMintFromUsd(dsce, collateralInUsd) - totalMint;
-
-        if (maxMintAmount <= 0) {
+    function mint(uint8 seed, uint96 amount) public {
+        if (haveDeposit.length == 0) {
             return;
         }
-        amount = bound(amount, 0, maxMintAmount);
-        if (amount <= 0) {
+        address sender = haveDeposit[seed % haveDeposit.length];
+        (uint totalMint, uint collateralInUsd) = dsce.getAccountInformation(sender);
+        uint256 maxMintAmount = TestLib.getMaxMintFromUsd(dsce, collateralInUsd);
+        if (maxMintAmount <= totalMint) {
             return;
         }
-        // console2.log('--------Mint---------');
-        // console2.log('collateralInUsd', collateralInUsd);
-        // console2.log('maxMintAmount', maxMintAmount);
-        // console2.log('totalMint', totalMint);
-        // console2.log('collateralInUsd', collateralInUsd);
-        //console2.log('amount', amount);
-
-        vm.startPrank(msg.sender);
-        dsce.mintDsc(amount);
-        vm.stopPrank();
+        maxMintAmount -= totalMint;
+        uint amountMint = bound(amount, 0, maxMintAmount);
+        if (amountMint == 0) {
+            return;
+        }
+        _mint(sender, amountMint);
     }
 
-    function depositCollateral(uint collateralSeed, uint amount) public {
+    function depositCollateral(uint8 collateralSeed, uint40 amount) public {
         ERC20Mock collateral = _getCollateralAddress(collateralSeed);
         uint amountCollateral = bound(amount, 1, MAX_DEPOSIT_AMOUNT);
-        collateral.mint(msg.sender, amountCollateral);
-
-        vm.startPrank(msg.sender);
-        collateral.approve(address(dsce), amountCollateral);
-        dsce.depositCollateral(address(collateral), amountCollateral);
-        vm.stopPrank();
-        // console2.log('--------Deposit---------');
-        // console2.log('Deposit ', amountCollateral);
+        _depositCollateral(msg.sender, collateral, amountCollateral);
     }
 
     function redeemCollateral(uint collateralSeed, uint amount) public {
@@ -75,15 +68,38 @@ contract Handler is Test {
         vm.stopPrank();
     }
 
-    // Cause revert??
-    // function updatePriceFeed(uint96 _price) public {
-    //     int256 price = int256(uint256(_price));
-    //     if (price < 1e8) {
-    //         return;
-    //     }
-    //     console2.log('update price', price);
-    //     ethUsdPriceFeed.updateAnswer(price);
-    // }
+    // If price changes too fast, this test will cause revert
+    // Solution : PRICE_CHANGE_PERCENT and PRICE_CHANGE_TIME_FRAME were added to detect
+    // the fast price changing (change to often and price change out of setting limit)
+    // DSCEngine__PriceChangeTooFrequent(), DSCEngine__PriceChangeExcessLimit() will be raised for such cases
+    function updatePriceFeed(int256 price) public {
+        if (block.timestamp < lastTimePriceChange + PRICE_CHANGE_TIME_FRAME) {
+            return;
+        }
+        lastTimePriceChange = block.timestamp;
+
+        int256 newPrice = bound(price, 1500e8, 2600e8);
+        _updatePriceFeed(newPrice);
+    }
+
+    function _depositCollateral(address sender, ERC20Mock collateral, uint amountCollateral) private {
+        collateral.mint(sender, amountCollateral);
+        vm.startPrank(sender);
+        collateral.approve(address(dsce), amountCollateral);
+        dsce.depositCollateral(address(collateral), amountCollateral);
+        vm.stopPrank();
+        haveDeposit.push(sender);
+    }
+
+    function _mint(address sender, uint amountMint) private {
+        vm.startPrank(sender);
+        dsce.mintDsc(amountMint);
+        vm.stopPrank();
+    }
+
+    function _updatePriceFeed(int256 price) private {
+        ethUsdPriceFeed.updateAnswer(price);
+    }
 
     function _getCollateralAddress(uint collateralSeed) private view returns (ERC20Mock) {
         //return ERC20Mock(collateralTokens[0]);
